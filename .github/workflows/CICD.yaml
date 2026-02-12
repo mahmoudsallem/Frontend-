@@ -535,6 +535,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [gitleaks, frontend-checks, sast-semgrep, snyk-code, js-security-scan, build, security-scan, snyk-container, dast-zap, push-and-sign, update-helm]
     if: always()
+    environment: SLACK_WEBHOOK_URL
     steps:
       - name: Final Summary
         run: |
