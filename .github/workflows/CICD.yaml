@@ -473,7 +473,7 @@ jobs:
         with:
           repository: mahmoudsallem/Hellm
           ref: dev
-          token: ${{ secrets.HELM_REPO_PAT }}
+          token: ${{ secrets.UPDATE_HELLM }}
           path: helm-repo
 
       - name: Update Image Tags in Helm Values
