@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Trivy Security Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+
+        h2 {
+            color: #555;
+            margin-top: 30px;
+        }
+
+        .summary {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+
+        .summary-item {
+            display: inline-block;
+            margin: 10px 20px;
+        }
+
+        .badge {
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-weight: bold;
+            color: white;
+        }
+
+        .critical {
+            background: #d32f2f;
+        }
+
+        .high {
+            background: #f57c00;
+        }
+
+        .medium {
+            background: #fbc02d;
+            color: #333;
+        }
+
+        .low {
+            background: #388e3c;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        th {
+            background: #2196F3;
+            color: white;
+            padding: 12px;
+            text-align: left;
+        }
+
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        tr:hover {
+            background: #f5f5f5;
+        }
+
+        .vuln-id {
+            font-family: monospace;
+            color: #1976d2;
+        }
+
+        .no-vulns {
+            text-align: center;
+            padding: 40px;
+            color: #4CAF50;
+            font-size: 18px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🛡️ Trivy Security Scan Report</h1>
+        <p><strong>Scan Date:</strong> {{SCAN_DATE}}</p>
+        <p><strong>Image:</strong> backend-app:scan</p>
+
+        <div class="summary">
+            <h2>Summary</h2>
+            <div class="summary-item"><strong>Total Vulnerabilities:</strong> {{TOTAL_VULNS}}</div>
+            <div class="summary-item"><span class="badge critical">CRITICAL: {{CRITICAL_COUNT}}</span></div>
+            <div class="summary-item"><span class="badge high">HIGH: {{HIGH_COUNT}}</span></div>
+            <div class="summary-item"><span class="badge medium">MEDIUM: {{MEDIUM_COUNT}}</span></div>
+            <div class="summary-item"><span class="badge low">LOW: {{LOW_COUNT}}</span></div>
+        </div>
+
+        {{CONTENT}}
+    </div>
+</body>
+
+</html>

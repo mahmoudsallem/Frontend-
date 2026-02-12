@@ -1,0 +1,568 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, dev]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # STAGE 1: CREDENTIAL SCANNING
+  # ============================================================
+  gitleaks:
+    name: Credential Scan (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        id: gitleaks_scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================================
+  # STAGE 2: PARALLEL SCANS & TESTS (Before Build)
+  # ============================================================
+
+  frontend-checks:
+    name: Frontend Tests & Linting
+    runs-on: ubuntu-latest
+    needs: gitleaks
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint with ESLint
+        run: |
+          if npm run | grep -q "lint"; then
+            npm run lint
+          else
+            npx eslint src
+          fi
+      - name: Run Tests
+        run: npm test -- --passWithNoTests
+
+  sast-semgrep:
+    name: Semgrep SAST Scan
+    runs-on: ubuntu-latest
+    needs: gitleaks
+    permissions:
+      contents: read
+      security-events: write
+    container:
+      image: semgrep/semgrep
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Run Semgrep Full Scan
+        run: |
+          semgrep scan --config auto --json --output semgrep-results.json .
+          semgrep scan --config auto --sarif --output semgrep-results.sarif .
+      - name: Upload SARIF Report
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: semgrep-results.sarif
+      - name: Generate HTML Report
+        if: always()
+        run: |
+          if [ -f .github/scripts/generate-report.py ]; then
+            python3 .github/scripts/generate-report.py semgrep semgrep-results.json semgrep-report.html
+          fi
+      - name: Upload HTML Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-security-report
+          path: semgrep-report.html
+
+  snyk-code:
+    name: Snyk Code SAST Scan
+    runs-on: ubuntu-latest
+    needs: gitleaks
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Snyk Open Source Scan (Dependencies)
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --json-file-output=snyk-opensource-results.json
+
+      - name: Snyk Code Scan (SAST)
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: code test
+          args: --json-file-output=snyk-code-results.json
+
+      - name: Upload Snyk JSON Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snyk-sast-results
+          path: |
+            snyk-opensource-results.json
+            snyk-code-results.json
+          retention-days: 30
+
+      - name: Snyk SAST Summary
+        if: always()
+        run: |
+          echo "### Snyk SAST Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Scan Type | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          if [ -f snyk-opensource-results.json ]; then
+            VULNS=$(python3 -c "import json; data=json.load(open('snyk-opensource-results.json')); print(data.get('uniqueCount', len(data.get('vulnerabilities',[]))))" 2>/dev/null || echo "N/A")
+            echo "| Open Source Dependencies | ${VULNS} vulnerabilities |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Open Source Dependencies | No results |" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f snyk-code-results.json ]; then
+            echo "| Code (SAST) | Completed |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Code (SAST) | No results |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  js-security-scan:
+    name: JS Security Scanner (njsscan + npm audit)
+    runs-on: ubuntu-latest
+    needs: gitleaks
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        id: npm_audit
+        continue-on-error: true
+        run: |
+          npm audit --json > npm-audit-results.json 2>&1 || true
+          npm audit --audit-level=high || echo "AUDIT_FAILED=true" >> $GITHUB_ENV
+
+      - name: Parse npm audit results
+        if: always()
+        run: |
+          echo "### npm Audit Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f npm-audit-results.json ]; then
+            CRITICAL=$(cat npm-audit-results.json | jq '.metadata.vulnerabilities.critical // 0' 2>/dev/null || echo "0")
+            HIGH=$(cat npm-audit-results.json | jq '.metadata.vulnerabilities.high // 0' 2>/dev/null || echo "0")
+            MODERATE=$(cat npm-audit-results.json | jq '.metadata.vulnerabilities.moderate // 0' 2>/dev/null || echo "0")
+            LOW=$(cat npm-audit-results.json | jq '.metadata.vulnerabilities.low // 0' 2>/dev/null || echo "0")
+            echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+            echo "| High | $HIGH |" >> $GITHUB_STEP_SUMMARY
+            echo "| Moderate | $MODERATE |" >> $GITHUB_STEP_SUMMARY
+            echo "| Low | $LOW |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No audit results available" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Run njsscan
+        id: njsscan
+        continue-on-error: true
+        run: |
+          pip install njsscan
+          njsscan --json -o njsscan-results.json src/ || true
+          njsscan --sarif -o njsscan-results.sarif src/ || true
+
+      - name: Upload njsscan SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: njsscan-results.sarif
+
+      - name: Parse njsscan results
+        if: always()
+        run: |
+          echo "### njsscan Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f njsscan-results.json ]; then
+            TOTAL=$(cat njsscan-results.json | jq '[.nodejs, .templates | values | .[]] | length' 2>/dev/null || echo "0")
+            echo "Total issues found: $TOTAL" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No njsscan results available" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload JS Security Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: js-security-reports
+          path: |
+            npm-audit-results.json
+            njsscan-results.json
+            njsscan-results.sarif
+          retention-days: 30
+
+  # ============================================================
+  # STAGE 3: BUILD
+  # ============================================================
+
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: [frontend-checks, sast-semgrep, snyk-code, js-security-scan]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          tags: frontend-app:${{ github.sha }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+             GENERATE_SOURCEMAP=false
+      - name: Save and Compress Image
+        run: |
+          # Pipe directly to zstd to avoid slow disk I/O
+          docker save frontend-app:${{ github.sha }} | zstd -1 -T0 > frontend-app-image.tar.zst
+      - name: Upload image
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: frontend-app-image.tar.zst
+          retention-days: 1
+          compression-level: 0
+
+  # ============================================================
+  # STAGE 4: CONTAINER SECURITY & DAST
+  # ============================================================
+
+  security-scan:
+    name: Trivy Container Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Download image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+      - name: Load Image
+        run: |
+          zstd -d -c frontend-app-image.tar.zst | docker load
+      - name: Run Trivy Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "frontend-app:${{ github.sha }}"
+          format: "json"
+          output: "trivy-results.json"
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: "CRITICAL,HIGH"
+      - name: Generate HTML Report
+        if: always()
+        run: |
+          if [ -f .github/scripts/generate-report.py ]; then
+            python3 .github/scripts/generate-report.py trivy trivy-results.json trivy-report.html
+          fi
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-security-report
+          path: |
+            trivy-results.json
+            trivy-report.html
+
+  snyk-container:
+    name: Snyk Container Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Image
+        run: |
+          zstd -d -c frontend-app-image.tar.zst | docker load
+
+      - name: Snyk Container Scan
+        uses: snyk/actions/docker@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: frontend-app:${{ github.sha }}
+          args: --severity-threshold=high --json-file-output=snyk-container-results.json
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snyk-container-results
+          path: snyk-container-results.json
+
+  dast-zap:
+    name: OWASP ZAP DAST Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load and Run
+        run: |
+          zstd -d -c frontend-app-image.tar.zst | docker load
+          docker run -d -p 80:80 --name zap-target \
+            --add-host backend.backend-ns.svc.cluster.local:127.0.0.1 \
+            frontend-app:${{ github.sha }}
+          echo "ZAP_TARGET=http://172.17.0.1" >> $GITHUB_ENV
+          echo "LOCAL_TARGET=http://127.0.0.1" >> $GITHUB_ENV
+
+      - name: Wait for app to be ready
+        run: |
+          for i in {1..15}; do
+            if curl -fsS ${{ env.LOCAL_TARGET }} >/dev/null; then
+              echo "App is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "App did not become ready in time"
+          exit 1
+
+      - name: ZAP Scan
+        uses: zaproxy/action-baseline@v0.13.0
+        with:
+          target: ${{ env.ZAP_TARGET }}
+          cmd_options: '-a -I -m 2 -x baseline.xml -J zap-report.json'
+          fail_action: true
+
+      - name: Generate HTML Report
+        if: always()
+        run: |
+          if [ -f .github/scripts/generate-report.py ]; then
+            python3 .github/scripts/generate-report.py zap baseline.xml zap-report.html
+          fi
+
+      - name: Upload Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-reports
+          path: |
+            baseline.xml
+            zap-report.json
+            zap-report.html
+
+  # ============================================================
+  # STAGE 5: SIGN
+  # ============================================================
+
+  push-and-sign:
+    name: Push to ECR & Sign with Cosign
+    runs-on: ubuntu-latest
+    needs: [security-scan, snyk-container, dast-zap]
+    if: github.event_name == 'push'
+    environment: ECR_REPOSITORY
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image_repository: ${{ steps.push-image.outputs.FULL_REPOSITORY }}
+      image_tag: ${{ steps.push-image.outputs.IMAGE_TAG }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.4.0
+
+      - name: Download image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Image
+        run: |
+          zstd -d -c frontend-app-image.tar.zst | docker load
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set Short SHA
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Tag and Push Image to ECR
+        id: push-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ env.SHORT_SHA }}
+        run: |
+          FULL_IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker tag frontend-app:${{ github.sha }} $FULL_IMAGE_URI
+          docker tag frontend-app:${{ github.sha }} $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $FULL_IMAGE_URI
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "IMAGE_URI=$FULL_IMAGE_URI" >> $GITHUB_ENV
+          echo "FULL_REPOSITORY=$ECR_REGISTRY/$ECR_REPOSITORY" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Sign image with Cosign
+        run: |
+          cosign sign --yes ${IMAGE_URI}
+
+  # ============================================================
+  # STAGE 6: UPDATE HELM CHART
+  # ============================================================
+
+  update-helm:
+    name: Update Helm Chart Values
+    runs-on: ubuntu-latest
+    needs: push-and-sign
+    if: github.event_name == 'push'
+    environment: Frontend_Update
+    steps:
+      - name: Checkout Helm Repository
+        uses: actions/checkout@v4
+        with:
+          repository: mahmoudsallem/Hellm
+          ref: dev
+          token: ${{ secrets.FRONTEND_UPDATE }}
+          path: helm-repo
+
+      - name: Update Image Repository and Tag in Helm Values
+        env:
+          IMAGE_REPOSITORY: ${{ needs.push-and-sign.outputs.image_repository }}
+          IMAGE_TAG: ${{ needs.push-and-sign.outputs.image_tag }}
+        run: |
+          echo "Updating Helm chart with:"
+          echo "  Repository: ${IMAGE_REPOSITORY}"
+          echo "  Tag: ${IMAGE_TAG}"
+
+          # Update frontend values.yaml - both repository and tag
+          if [ -f helm-repo/helm/Dev/frontend/values.yaml ]; then
+            sed -i "s|repository:.*|repository: \"${IMAGE_REPOSITORY}\"|g" helm-repo/helm/Dev/frontend/values.yaml
+            sed -i "s|tag:.*|tag: \"${IMAGE_TAG}\"|g" helm-repo/helm/Dev/frontend/values.yaml
+            echo "Updated frontend values.yaml"
+            cat helm-repo/helm/Dev/frontend/values.yaml
+          fi
+
+          echo "Frontend Helm chart values updated"
+
+      - name: Commit and Push Changes
+        env:
+          IMAGE_TAG: ${{ needs.push-and-sign.outputs.image_tag }}
+        run: |
+          cd helm-repo
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update frontend image to ${IMAGE_TAG}
+
+          Triggered by: ${{ github.repository }}
+          Workflow: ${{ github.workflow }}
+          Run ID: ${{ github.run_id }}
+          Actor: ${{ github.actor }}"
+
+            git push origin dev
+            echo "Changes pushed to Hellm repository"
+          fi
+
+      - name: Helm Update Summary
+        env:
+          IMAGE_REPOSITORY: ${{ needs.push-and-sign.outputs.image_repository }}
+          IMAGE_TAG: ${{ needs.push-and-sign.outputs.image_tag }}
+        run: |
+          echo "### Helm Chart Update Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Repository | \`${IMAGE_REPOSITORY}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | \`${IMAGE_TAG}\` |" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # STAGE 7: SUMMARY
+  # ============================================================
+
+  summary:
+    name: Pipeline Summary
+    runs-on: ubuntu-latest
+    needs: [gitleaks, frontend-checks, sast-semgrep, snyk-code, js-security-scan, build, security-scan, snyk-container, dast-zap, push-and-sign, update-helm]
+    if: always()
+    environment: SLACK_WEBHOOK_URL
+    steps:
+      - name: Final Summary
+        run: |
+          echo "### CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "Pipeline completed for branch ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify Slack
+        if: always()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: 'Pipeline status: ${{ job.status }}'
