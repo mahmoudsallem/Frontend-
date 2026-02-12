@@ -459,13 +459,75 @@ jobs:
           cosign sign --yes ${IMAGE_URI}
 
   # ============================================================
-  # STAGE 6: SUMMARY
+  # STAGE 6: UPDATE HELM CHART
+  # ============================================================
+
+  update-helm:
+    name: Update Helm Chart Values
+    runs-on: ubuntu-latest
+    needs: push-and-sign
+    environment: UPDATE_HELLM
+    steps:
+      - name: Checkout Helm Repository
+        uses: actions/checkout@v4
+        with:
+          repository: mahmoudsallem/Hellm
+          ref: dev
+          token: ${{ secrets.HELM_REPO_PAT }}
+          path: helm-repo
+
+      - name: Update Image Tags in Helm Values
+        run: |
+          IMAGE_TAG="${{ github.sha }}"
+          echo "Updating Helm chart values with image tag: ${IMAGE_TAG}"
+
+          # Update frontend values.yaml
+          if [ -f helm-repo/helm/Dev/frontend/values.yaml ]; then
+            sed -i "s|tag:.*|tag: \"${IMAGE_TAG}\"|g" helm-repo/helm/Dev/frontend/values.yaml
+            echo "Updated frontend values.yaml"
+          fi
+
+          echo "Frontend Helm chart values updated"
+
+      - name: Commit and Push Changes
+        run: |
+          cd helm-repo
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update frontend image tag to ${{ github.sha }}
+
+          Triggered by: ${{ github.repository }}
+          Workflow: ${{ github.workflow }}
+          Run ID: ${{ github.run_id }}
+          Actor: ${{ github.actor }}"
+
+            git push origin dev
+            echo "Changes pushed to Hellm repository"
+          fi
+
+      - name: Helm Update Summary
+        run: |
+          echo "### Helm Chart Update Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Application | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend | Updated |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Image Tag: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # STAGE 7: SUMMARY
   # ============================================================
 
   summary:
     name: Pipeline Summary
     runs-on: ubuntu-latest
-    needs: [gitleaks, frontend-checks, sast-semgrep, snyk-code, js-security-scan, build, security-scan, snyk-container, dast-zap, push-and-sign]
+    needs: [gitleaks, frontend-checks, sast-semgrep, snyk-code, js-security-scan, build, security-scan, snyk-container, dast-zap, push-and-sign, update-helm]
     if: always()
     steps:
       - name: Final Summary
