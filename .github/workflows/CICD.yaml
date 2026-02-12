@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, dev]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ============================================================
   # STAGE 1: CREDENTIAL SCANNING
@@ -412,6 +416,7 @@ jobs:
     name: Push to ECR & Sign with Cosign
     runs-on: ubuntu-latest
     needs: [security-scan, snyk-container, dast-zap]
+    if: github.event_name == 'push'
     environment: ECR_REPOSITORY
     permissions:
       id-token: write
@@ -466,6 +471,7 @@ jobs:
     name: Update Helm Chart Values
     runs-on: ubuntu-latest
     needs: push-and-sign
+    if: github.event_name == 'push'
     environment: Frontend_Update
     steps:
       - name: Checkout Helm Repository
