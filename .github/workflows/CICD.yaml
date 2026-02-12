@@ -466,14 +466,14 @@ jobs:
     name: Update Helm Chart Values
     runs-on: ubuntu-latest
     needs: push-and-sign
-    environment: UPDATE_HELLM
+    environment: Frontend_Update
     steps:
       - name: Checkout Helm Repository
         uses: actions/checkout@v4
         with:
           repository: mahmoudsallem/Hellm
           ref: dev
-          token: ${{ secrets.UPDATE_HELLM }}
+          token: ${{ secrets.FRONTEND_UPDATE }}
           path: helm-repo
 
       - name: Update Image Tags in Helm Values
