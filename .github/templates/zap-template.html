@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>OWASP ZAP Baseline Scan Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #e74c3c;
+            padding-bottom: 10px;
+        }
+
+        h2 {
+            color: #555;
+            margin-top: 30px;
+        }
+
+        .summary {
+            background: #fdecea;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            border-left: 4px solid #e74c3c;
+        }
+
+        .summary-item {
+            display: inline-block;
+            margin: 10px 20px;
+        }
+
+        .badge {
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-weight: bold;
+            color: white;
+        }
+
+        .high {
+            background: #d32f2f;
+        }
+
+        .medium {
+            background: #f57c00;
+        }
+
+        .low {
+            background: #fbc02d;
+            color: #333;
+        }
+
+        .informational {
+            background: #1976d2;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        th {
+            background: #e74c3c;
+            color: white;
+            padding: 12px;
+            text-align: left;
+        }
+
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+            vertical-align: top;
+        }
+
+        tr:hover {
+            background: #f5f5f5;
+        }
+
+        .alert-name {
+            font-weight: bold;
+            color: #333;
+        }
+
+        .cwe-id {
+            font-family: monospace;
+            color: #1976d2;
+        }
+
+        .no-alerts {
+            text-align: center;
+            padding: 40px;
+            color: #4CAF50;
+            font-size: 18px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🔍 OWASP ZAP Baseline Scan Report</h1>
+        <p><strong>Scan Date:</strong> {{SCAN_DATE}}</p>
+        <p><strong>Target:</strong> {{TARGET}}</p>
+
+        <div class="summary">
+            <h2>Summary</h2>
+            <div class="summary-item"><strong>Total Alerts:</strong> {{TOTAL_ALERTS}}</div>
+            <div class="summary-item"><span class="badge high">HIGH: {{HIGH_COUNT}}</span></div>
+            <div class="summary-item"><span class="badge medium">MEDIUM: {{MEDIUM_COUNT}}</span></div>
+            <div class="summary-item"><span class="badge low">LOW: {{LOW_COUNT}}</span></div>
+            <div class="summary-item"><span class="badge informational">INFO: {{INFO_COUNT}}</span></div>
+        </div>
+
+        {{CONTENT}}
+    </div>
+</body>
+
+</html>
