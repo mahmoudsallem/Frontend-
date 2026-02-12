@@ -419,6 +419,9 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    outputs:
+      image_repository: ${{ steps.push-image.outputs.FULL_REPOSITORY }}
+      image_tag: ${{ steps.push-image.outputs.IMAGE_TAG }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -449,16 +452,20 @@ jobs:
         run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
 
       - name: Tag and Push Image to ECR
+        id: push-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: frontend-${{ env.SHORT_SHA }}
+          IMAGE_TAG: ${{ env.SHORT_SHA }}
         run: |
-          docker tag frontend-app:${{ github.sha }} $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker tag frontend-app:${{ github.sha }} $ECR_REGISTRY/$ECR_REPOSITORY:frontend-latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:frontend-latest
-          echo "IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+          FULL_IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker tag frontend-app:${{ github.sha }} $FULL_IMAGE_URI
+          docker tag frontend-app:${{ github.sha }} $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $FULL_IMAGE_URI
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "IMAGE_URI=$FULL_IMAGE_URI" >> $GITHUB_ENV
+          echo "FULL_REPOSITORY=$ECR_REGISTRY/$ECR_REPOSITORY" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
 
       - name: Sign image with Cosign
         run: |
@@ -483,23 +490,28 @@ jobs:
           token: ${{ secrets.FRONTEND_UPDATE }}
           path: helm-repo
 
-      - name: Set Short SHA
-        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
-
-      - name: Update Image Tags in Helm Values
+      - name: Update Image Repository and Tag in Helm Values
+        env:
+          IMAGE_REPOSITORY: ${{ needs.push-and-sign.outputs.image_repository }}
+          IMAGE_TAG: ${{ needs.push-and-sign.outputs.image_tag }}
         run: |
-          IMAGE_TAG="${{ env.SHORT_SHA }}"
-          echo "Updating Helm chart values with image tag: ${IMAGE_TAG}"
+          echo "Updating Helm chart with:"
+          echo "  Repository: ${IMAGE_REPOSITORY}"
+          echo "  Tag: ${IMAGE_TAG}"
 
-          # Update frontend values.yaml
+          # Update frontend values.yaml - both repository and tag
           if [ -f helm-repo/helm/Dev/frontend/values.yaml ]; then
+            sed -i "s|repository:.*|repository: \"${IMAGE_REPOSITORY}\"|g" helm-repo/helm/Dev/frontend/values.yaml
             sed -i "s|tag:.*|tag: \"${IMAGE_TAG}\"|g" helm-repo/helm/Dev/frontend/values.yaml
             echo "Updated frontend values.yaml"
+            cat helm-repo/helm/Dev/frontend/values.yaml
           fi
 
           echo "Frontend Helm chart values updated"
 
       - name: Commit and Push Changes
+        env:
+          IMAGE_TAG: ${{ needs.push-and-sign.outputs.image_tag }}
         run: |
           cd helm-repo
           git config user.name "GitHub Actions"
@@ -509,7 +521,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Update frontend image tag to ${{ env.SHORT_SHA }}
+            git commit -m "Update frontend image to ${IMAGE_TAG}
 
           Triggered by: ${{ github.repository }}
           Workflow: ${{ github.workflow }}
@@ -521,14 +533,16 @@ jobs:
           fi
 
       - name: Helm Update Summary
+        env:
+          IMAGE_REPOSITORY: ${{ needs.push-and-sign.outputs.image_repository }}
+          IMAGE_TAG: ${{ needs.push-and-sign.outputs.image_tag }}
         run: |
           echo "### Helm Chart Update Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Application | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Frontend | Updated |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Image Tag: \`${{ env.SHORT_SHA }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Repository | \`${IMAGE_REPOSITORY}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | \`${IMAGE_TAG}\` |" >> $GITHUB_STEP_SUMMARY
 
   # ============================================================
   # STAGE 7: SUMMARY
