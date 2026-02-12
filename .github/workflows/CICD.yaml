@@ -546,13 +546,4 @@ jobs:
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_CHANNEL: devops-alerts
-          SLACK_COLOR: ${{ job.status == 'success' && 'good' || job.status == 'failure' && 'danger' || 'warning' }}
-          SLACK_TITLE: "Frontend CI/CD Pipeline"
-          SLACK_MESSAGE: |
-            *Status:* ${{ job.status }}
-            *Branch:* ${{ github.ref_name }}
-            *Commit:* ${{ github.sha }}
-            *Actor:* ${{ github.actor }}
-            *Workflow:* ${{ github.workflow }}
-          SLACK_FOOTER: "Run ID: ${{ github.run_id }}"
+          SLACK_MESSAGE: 'Pipeline status: ${{ job.status }}'
